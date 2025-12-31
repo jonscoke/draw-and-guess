@@ -1,66 +1,55 @@
-import { PNG } from 'pngjs';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
-const LABELS = [
-  '太阳',
-  '草地',
-  '夜空',
-  '海洋',
-  '花朵',
-  '苹果',
-  '气球',
-];
-
-function decodeDataUrl(dataUrl: string) {
-  const matches = dataUrl.match(/^data:image\/png;base64,(.+)$/);
-  if (!matches) return null;
-  return Buffer.from(matches[1], 'base64');
-}
-
-function guessFromPixels(png: PNG) {
-  let bright = 0;
-  let dark = 0;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  const total = png.width * png.height;
-
-  for (let i = 0; i < png.data.length; i += 4) {
-    const r = png.data[i];
-    const g = png.data[i + 1];
-    const b = png.data[i + 2];
-    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if (luminance > 200) bright += 1;
-    if (luminance < 55) dark += 1;
-    red += r;
-    green += g;
-    blue += b;
-  }
-
-  const avgRed = red / total;
-  const avgGreen = green / total;
-  const avgBlue = blue / total;
-
-  if (avgBlue > avgRed && avgBlue > avgGreen) return '海洋';
-  if (avgGreen > avgRed && avgGreen > avgBlue) return '草地';
-  if (dark / total > 0.35) return '夜空';
-  if (bright / total > 0.4) return '太阳';
-  if (avgRed > avgGreen && avgRed > avgBlue) return '苹果';
-
-  return LABELS[Math.floor(Math.random() * LABELS.length)];
-}
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const buffer = decodeDataUrl(body.image || '');
-  if (!buffer) {
+  const image = body.image as string | undefined;
+  if (!image) {
     return NextResponse.json({ result: '我看不清楚呢，再画大一点？' }, { status: 400 });
   }
 
-  const png = PNG.sync.read(buffer);
-  const result = guessFromPixels(png);
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json({ result: '服务未配置 OpenAI Key' }, { status: 500 });
+  }
+
+  const response = await fetch(OPENAI_API_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个你画我猜游戏的 AI，请用中文简短回答画的是什么。',
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请猜测这幅画的内容，只返回一个简短名词或短语。' },
+            { type: 'image_url', image_url: { url: image } },
+          ],
+        },
+      ],
+      max_tokens: 30,
+      temperature: 0.2,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    return NextResponse.json({ result: `AI 调用失败: ${errorText}` }, { status: 500 });
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content?.trim();
+  const result = content || '我暂时猜不出来';
 
   return NextResponse.json({ result: `我猜是「${result}」` });
 }
